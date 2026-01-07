@@ -19,14 +19,12 @@ echo "[INFO] Start: $(date)"
 WORKDIR="/home/hpc/b116ba/b117ba41/Masterarbeit/KonkreteVersuche/E3_drayson/model_collapse"
 CONTAINER="$HOME/containers/python311.sif"
 
-# Per-job output dir (stable, separated)
 RUN_DIR="$WORKDIR/outputs_fixed/gpt2_topk_importance/job_${SLURM_JOB_ID}"
 
-# Use node-local temp if available (reduces /home usage)
+# node-local temp to reduce /home usage
 TMPBASE="${SLURM_TMPDIR:-/tmp}/${USER}/model_collapse_${SLURM_JOB_ID}"
 mkdir -p "$TMPBASE"
 
-# Put heavy caches into TMP to reduce quota pressure (you are over /home soft quota)
 export HF_HOME="$TMPBASE/.hf_cache"
 export TRANSFORMERS_CACHE="$HF_HOME/transformers"
 export HF_DATASETS_CACHE="$HF_HOME/datasets"
@@ -36,12 +34,10 @@ export PIP_CACHE_DIR="$TMPBASE/.pip_cache"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
 export WANDB_DISABLED=true
 
-# Offline flags (keeps HF from trying network)
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 
-# Python userbase inside project (persistent). If quota is tight, you can also move this to $TMPBASE,
-# but then it reinstalls every job.
+# persistent userbase (be careful with quota)
 export PYTHONUSERBASE="$WORKDIR/.pyuserbase"
 export PATH="$PYTHONUSERBASE/bin:$PATH"
 
@@ -70,15 +66,13 @@ echo "[INFO] Wrote config/dataset/wikitext2_local.yaml"
 for f in data/wikitext2/train.json data/wikitext2/validation.json data/wikitext2/test.json; do
   if [ ! -f "$f" ]; then
     echo "[ERROR] Missing dataset file: $f"
-    echo "[HINT] If your repo stores data elsewhere, adapt config/dataset/wikitext2_local.yaml accordingly."
     exit 1
   fi
 done
 echo "[INFO] Human dataset JSONs found."
 
 # ------------------------------------------------------------
-# Model sanity check (offline requires local models)
-# Put them in: $WORKDIR/_vendors/models/gpt2 and $WORKDIR/_vendors/models/modernbert_ai_detection
+# Local model sanity check (offline requires local models)
 # ------------------------------------------------------------
 GPT2_DIR="$WORKDIR/_vendors/models/gpt2"
 DET_DIR="$WORKDIR/_vendors/models/modernbert_ai_detection"
@@ -86,7 +80,6 @@ DET_DIR="$WORKDIR/_vendors/models/modernbert_ai_detection"
 for d in "$GPT2_DIR" "$DET_DIR"; do
   if [ ! -d "$d" ]; then
     echo "[ERROR] Missing local model dir: $d"
-    echo "[HINT] You are running offline. Download on a machine with internet and copy into _vendors/models/."
     exit 1
   fi
   if [ ! -f "$d/config.json" ]; then
@@ -97,14 +90,23 @@ done
 echo "[INFO] Local model dirs look OK."
 
 # ------------------------------------------------------------
-# Install deps (idempotent)
-# - Fixes certifi error
-# - Avoids reinstall every run via a stamp file
-# IMPORTANT: If you change deps, bump the stamp name to force re-install.
+# Wheels sanity check (certifi wheel exists)
 # ------------------------------------------------------------
-STAMP="$PYTHONUSERBASE/.deps_ok_transformers_440_certifi_fix_v1"
+WHEEL_DIR="$WORKDIR/_vendors/wheels"
+if ! ls "$WHEEL_DIR"/certifi-*.whl >/dev/null 2>&1; then
+  echo "[ERROR] certifi wheel missing in: $WHEEL_DIR"
+  echo "[HINT] Create it with: python -m pip download -d _vendors/wheels certifi"
+  exit 1
+fi
+echo "[INFO] Wheel dir OK: $WHEEL_DIR"
+
+# ------------------------------------------------------------
+# Install deps (idempotent via stamp)
+# IMPORTANT: bump stamp when changing deps logic
+# ------------------------------------------------------------
+STAMP="$PYTHONUSERBASE/.deps_ok_transformers_440_offline_certifi_v2"
 if [ ! -f "$STAMP" ]; then
-  echo "[INFO] Installing Python packages (forcing once via stamp) ..."
+  echo "[INFO] Installing Python packages (offline certifi) ..."
   singularity exec --nv "$CONTAINER" bash -lc "
     set -e
     cd '$WORKDIR'
@@ -119,16 +121,16 @@ if [ ! -f "$STAMP" ]; then
 
     python -m pip install --upgrade --user pip setuptools wheel
 
-    # ✅ critical fix: requests stack + certifi + hub
-    python -m pip install --user --upgrade --force-reinstall \
-      certifi requests urllib3 idna charset_normalizer huggingface_hub
+    # ✅ OFFLINE: install certifi from local wheel dir (no internet needed)
+    python -m pip install --user --no-index --find-links '$WHEEL_DIR' \
+      --upgrade --force-reinstall certifi
 
     python - << 'PY'
 import certifi
 print('certifi OK:', certifi.__version__, 'at', certifi.__file__)
 PY
 
-    # Main deps (repo requirements often incomplete)
+    # Main deps
     python -m pip install --user \
       'torch>=2.0' \
       'transformers>=4.40' \
@@ -138,13 +140,10 @@ PY
 
     python -m pip install --user -r requirements.txt
 
-    # Sanity check
     python - << 'PY'
-import transformers, certifi, requests, huggingface_hub
+import transformers, certifi
 print('transformers', transformers.__version__)
 print('certifi', certifi.__version__)
-print('requests', requests.__version__)
-print('huggingface_hub', huggingface_hub.__version__)
 PY
   "
   touch "$STAMP"
@@ -166,8 +165,6 @@ echo "[INFO] Precreated $((NUM_ITERS+1)) generation folders with data.json"
 
 # ------------------------------------------------------------
 # Run
-# NOTE: We additionally pass explicit local model paths so HF never tries to fetch.
-# If Hydra complains about unknown keys, we adjust the key names to match repo config.
 # ------------------------------------------------------------
 echo "[INFO] Starting main.py ..."
 singularity exec --nv "$CONTAINER" bash -lc "
