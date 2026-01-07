@@ -1,0 +1,42 @@
+model:
+  name: openai-community/gpt2
+  short_name: gpt2
+dataset:
+  path: data/wikitext2
+train:
+  block_size: 512
+  loss_on_last_n_tokens: 256
+  batch_size: 8
+  num_train_epochs: 1
+  save_steps: 2000
+  num_samples: None
+decoding:
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 50
+  beam_search: false
+detector:
+  tokenizer_name: GeorgeDrayson/modernbert-ai-detection
+  model_path: GeorgeDrayson/modernbert-ai-detection
+  temperature: 1.359828233718872
+  ai_confidence_threshold: 0.8674598932266235
+data_selection:
+  strategy: importance_sampling
+  upsample_factor: 1.5
+  bias_factor: 10
+  max_repeats: 3
+smoke_test: false
+seed: 42
+num_iterations: 10
+wandb_disabled: true
+ai_beta: 1.0
+human_data_alpha: 1.0
+accumulate_ai_data: false
+cuda_device: 0
+torch_dtype: bfloat16
+low_cpu_mem_usage: true
+plotting:
+  enabled: true
+  metrics:
+  - eval_accuracy
+  - perplexity

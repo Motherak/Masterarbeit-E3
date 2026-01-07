@@ -1,49 +1,15 @@
-# =========================
-# Ignore everything by default
-# =========================
+# Ignore everything
 *
+
+# Allow directories
 !*/
 
-# =========================
-# Allow top-level essentials
-# =========================
-!.gitignore
-!README.md
+# Allow Python source files
+!**/*.py
 
-# =========================
-# Allow inside model_collapse only what we need
-# =========================
-!model_collapse/README.md
-!model_collapse/requirements.txt
-!model_collapse/main.py
-!model_collapse/run_*.slurm
-!model_collapse/*.slurm
-!model_collapse/*.py
+# Allow YAML config files
+!**/*.yaml
+!**/*.yml
 
-# configs
-!model_collapse/config/**
-!model_collapse/config/**/*.yaml
-!model_collapse/config/**/*.yml
-
-# source code
-!model_collapse/src/**
-!model_collapse/src/**/*.py
-
-# data (optional) – falls du die kleinen jsons wirklich mitversionieren willst:
-!model_collapse/data/**
-!model_collapse/data/**/*.json
-
-# =========================
-# Explicitly block junk (extra safety)
-# =========================
-model_collapse/.pydeps/
-model_collapse/**/.pydeps/
-model_collapse/**/__pycache__/
-model_collapse/**/.ruff_cache/
-model_collapse/**/.pytest_cache/
-model_collapse/outputs*/
-model_collapse/**/outputs*/
-model_collapse/logs/
-model_collapse/checkpoints/
-model_collapse/models/
-model_collapse/_vendors/
+# Allow SLURM job scripts
+!**/*.slurm

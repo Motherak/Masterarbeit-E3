@@ -1,0 +1,7 @@
+- dataset=wikitext2_local
+- model=gpt2
+- decoding=top_k
+- detector=modernbert_mage
+- data_selection=importance_sampling
+- num_iterations=10
+- wandb_disabled=true
