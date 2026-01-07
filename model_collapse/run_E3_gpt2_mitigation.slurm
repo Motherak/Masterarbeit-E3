@@ -13,15 +13,10 @@ echo "[INFO] Host: $(hostname)"
 echo "[INFO] JobID: ${SLURM_JOB_ID}"
 echo "[INFO] Start: $(date)"
 
-# ------------------------------------------------------------
-# Paths
-# ------------------------------------------------------------
 WORKDIR="/home/hpc/b116ba/b117ba41/Masterarbeit/KonkreteVersuche/E3_drayson/model_collapse"
 CONTAINER="$HOME/containers/python311.sif"
-
 RUN_DIR="$WORKDIR/outputs_fixed/gpt2_topk_importance/job_${SLURM_JOB_ID}"
 
-# node-local temp to reduce /home usage
 TMPBASE="${SLURM_TMPDIR:-/tmp}/${USER}/model_collapse_${SLURM_JOB_ID}"
 mkdir -p "$TMPBASE"
 
@@ -37,100 +32,71 @@ export WANDB_DISABLED=true
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 
-# persistent userbase (be careful with quota)
 export PYTHONUSERBASE="$WORKDIR/.pyuserbase"
 export PATH="$PYTHONUSERBASE/bin:$PATH"
-
-# ------------------------------------------------------------
-# Enter repo
-# ------------------------------------------------------------
-if [ ! -d "$WORKDIR" ]; then
-  echo "[ERROR] WORKDIR not found: $WORKDIR"
-  exit 1
-fi
+unset PYTHONNOUSERSITE
+export PYTHONPATH="$PYTHONUSERBASE/lib/python3.11/site-packages:${PYTHONPATH:-}"
 
 cd "$WORKDIR"
 echo "[INFO] Working dir: $(pwd)"
 echo "[INFO] RUN_DIR: $RUN_DIR"
 echo "[INFO] TMPBASE: $TMPBASE"
 
-# ------------------------------------------------------------
-# Dataset config + sanity check
-# ------------------------------------------------------------
+# local models
+GPT2_DIR="$WORKDIR/_vendors/models/gpt2"
+DET_DIR="$WORKDIR/_vendors/models/modernbert_ai_detection"
+WHEEL_DIR="$WORKDIR/_vendors/wheels"
+
+for d in "$GPT2_DIR" "$DET_DIR"; do
+  [ -d "$d" ] || { echo "[ERROR] Missing local model dir: $d"; exit 1; }
+  [ -f "$d/config.json" ] || { echo "[ERROR] Missing config.json in: $d"; exit 1; }
+done
+ls "$WHEEL_DIR"/certifi-*.whl >/dev/null 2>&1 || { echo "[ERROR] certifi wheel missing in $WHEEL_DIR"; exit 1; }
+
+# dataset cfg
 mkdir -p config/dataset
 cat > config/dataset/wikitext2_local.yaml << 'EOF'
 path: data/wikitext2
 EOF
-echo "[INFO] Wrote config/dataset/wikitext2_local.yaml"
 
 for f in data/wikitext2/train.json data/wikitext2/validation.json data/wikitext2/test.json; do
-  if [ ! -f "$f" ]; then
-    echo "[ERROR] Missing dataset file: $f"
-    exit 1
-  fi
+  [ -f "$f" ] || { echo "[ERROR] Missing dataset file: $f"; exit 1; }
 done
-echo "[INFO] Human dataset JSONs found."
 
-# ------------------------------------------------------------
-# Local model sanity check (offline requires local models)
-# ------------------------------------------------------------
-GPT2_DIR="$WORKDIR/_vendors/models/gpt2"
-DET_DIR="$WORKDIR/_vendors/models/modernbert_ai_detection"
-
-for d in "$GPT2_DIR" "$DET_DIR"; do
-  if [ ! -d "$d" ]; then
-    echo "[ERROR] Missing local model dir: $d"
-    exit 1
-  fi
-  if [ ! -f "$d/config.json" ]; then
-    echo "[ERROR] Local model dir missing config.json: $d"
-    exit 1
-  fi
-done
-echo "[INFO] Local model dirs look OK."
-
-# ------------------------------------------------------------
-# Wheels sanity check (certifi wheel exists)
-# ------------------------------------------------------------
-WHEEL_DIR="$WORKDIR/_vendors/wheels"
-if ! ls "$WHEEL_DIR"/certifi-*.whl >/dev/null 2>&1; then
-  echo "[ERROR] certifi wheel missing in: $WHEEL_DIR"
-  echo "[HINT] Create it with: python -m pip download -d _vendors/wheels certifi"
-  exit 1
-fi
-echo "[INFO] Wheel dir OK: $WHEEL_DIR"
-
-# ------------------------------------------------------------
-# Install deps (idempotent via stamp)
-# IMPORTANT: bump stamp when changing deps logic
-# ------------------------------------------------------------
-STAMP="$PYTHONUSERBASE/.deps_ok_transformers_440_offline_certifi_v2"
+# install deps (force once)
+STAMP="$PYTHONUSERBASE/.deps_ok_transformers_440_offline_certifi_target_v3"
 if [ ! -f "$STAMP" ]; then
-  echo "[INFO] Installing Python packages (offline certifi) ..."
+  echo "[INFO] Installing Python packages (offline certifi --target) ..."
   singularity exec --nv "$CONTAINER" bash -lc "
     set -e
     cd '$WORKDIR'
+
     export PYTHONUSERBASE='$PYTHONUSERBASE'
     export PATH=\"\$PYTHONUSERBASE/bin:\$PATH\"
+    unset PYTHONNOUSERSITE
+    export PYTHONPATH='$PYTHONUSERBASE/lib/python3.11/site-packages':\${PYTHONPATH:-}
     export PIP_CACHE_DIR='$PIP_CACHE_DIR'
     export PIP_DISABLE_PIP_VERSION_CHECK=1
 
     echo '[DBG] python:' \$(which python)
-    echo '[DBG] pip:' \$(which pip)
     python -V
+    echo '[DBG] PYTHONUSERBASE:' \$PYTHONUSERBASE
+    echo '[DBG] PYTHONPATH:' \$PYTHONPATH
 
     python -m pip install --upgrade --user pip setuptools wheel
 
-    # ✅ OFFLINE: install certifi from local wheel dir (no internet needed)
-    python -m pip install --user --no-index --find-links '$WHEEL_DIR' \
-      --upgrade --force-reinstall certifi
+    # ✅ certifi exakt in userbase site-packages installieren
+    python -m pip install --no-index --find-links '$WHEEL_DIR' \
+      --upgrade --force-reinstall \
+      --target '$PYTHONUSERBASE/lib/python3.11/site-packages' \
+      certifi
 
     python - << 'PY'
 import certifi
 print('certifi OK:', certifi.__version__, 'at', certifi.__file__)
 PY
 
-    # Main deps
+    # übrige deps
     python -m pip install --user \
       'torch>=2.0' \
       'transformers>=4.40' \
@@ -152,20 +118,6 @@ else
   echo "[INFO] Deps already installed (stamp exists): $STAMP"
 fi
 
-# ------------------------------------------------------------
-# Precreate expected generation folders
-# ------------------------------------------------------------
-NUM_ITERS=10
-mkdir -p "$RUN_DIR"
-for i in $(seq 0 $NUM_ITERS); do
-  mkdir -p "$RUN_DIR/$i"
-  cp -f "data/wikitext2/train.json" "$RUN_DIR/$i/data.json"
-done
-echo "[INFO] Precreated $((NUM_ITERS+1)) generation folders with data.json"
-
-# ------------------------------------------------------------
-# Run
-# ------------------------------------------------------------
 echo "[INFO] Starting main.py ..."
 singularity exec --nv "$CONTAINER" bash -lc "
   set -e
@@ -175,13 +127,14 @@ singularity exec --nv "$CONTAINER" bash -lc "
   export TRANSFORMERS_CACHE='$TRANSFORMERS_CACHE'
   export HF_DATASETS_CACHE='$HF_DATASETS_CACHE'
   export HUGGINGFACE_HUB_CACHE='$HUGGINGFACE_HUB_CACHE'
-
   export TRANSFORMERS_OFFLINE=1
   export HF_HUB_OFFLINE=1
   export WANDB_DISABLED=true
 
   export PYTHONUSERBASE='$PYTHONUSERBASE'
   export PATH=\"\$PYTHONUSERBASE/bin:\$PATH\"
+  unset PYTHONNOUSERSITE
+  export PYTHONPATH='$PYTHONUSERBASE/lib/python3.11/site-packages':\${PYTHONPATH:-}
 
   python main.py \
     hydra.run.dir='$RUN_DIR' \
