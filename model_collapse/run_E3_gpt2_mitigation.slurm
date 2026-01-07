@@ -98,12 +98,13 @@ echo "[INFO] Local model dirs look OK."
 
 # ------------------------------------------------------------
 # Install deps (idempotent)
-# - Fixes your certifi error
+# - Fixes certifi error
 # - Avoids reinstall every run via a stamp file
+# IMPORTANT: If you change deps, bump the stamp name to force re-install.
 # ------------------------------------------------------------
-STAMP="$PYTHONUSERBASE/.deps_ok_transformers_440"
+STAMP="$PYTHONUSERBASE/.deps_ok_transformers_440_certifi_fix_v1"
 if [ ! -f "$STAMP" ]; then
-  echo "[INFO] Installing Python packages (first time for this userbase) ..."
+  echo "[INFO] Installing Python packages (forcing once via stamp) ..."
   singularity exec --nv "$CONTAINER" bash -lc "
     set -e
     cd '$WORKDIR'
@@ -112,11 +113,20 @@ if [ ! -f "$STAMP" ]; then
     export PIP_CACHE_DIR='$PIP_CACHE_DIR'
     export PIP_DISABLE_PIP_VERSION_CHECK=1
 
+    echo '[DBG] python:' \$(which python)
+    echo '[DBG] pip:' \$(which pip)
+    python -V
+
     python -m pip install --upgrade --user pip setuptools wheel
 
     # ✅ critical fix: requests stack + certifi + hub
     python -m pip install --user --upgrade --force-reinstall \
       certifi requests urllib3 idna charset_normalizer huggingface_hub
+
+    python - << 'PY'
+import certifi
+print('certifi OK:', certifi.__version__, 'at', certifi.__file__)
+PY
 
     # Main deps (repo requirements often incomplete)
     python -m pip install --user \
@@ -128,6 +138,7 @@ if [ ! -f "$STAMP" ]; then
 
     python -m pip install --user -r requirements.txt
 
+    # Sanity check
     python - << 'PY'
 import transformers, certifi, requests, huggingface_hub
 print('transformers', transformers.__version__)
@@ -156,7 +167,7 @@ echo "[INFO] Precreated $((NUM_ITERS+1)) generation folders with data.json"
 # ------------------------------------------------------------
 # Run
 # NOTE: We additionally pass explicit local model paths so HF never tries to fetch.
-# These Hydra keys MAY differ in your repo; if it errors about unknown keys, we’ll adjust.
+# If Hydra complains about unknown keys, we adjust the key names to match repo config.
 # ------------------------------------------------------------
 echo "[INFO] Starting main.py ..."
 singularity exec --nv "$CONTAINER" bash -lc "
